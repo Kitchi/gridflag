@@ -1,0 +1,39 @@
+[build-system]
+requires = ["setuptools"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "gridflag"
+dynamic = ["readme"]
+version = "0.1"
+authors = [
+         {name = "Srikrishna Sekhar", email = "ssekhar@nrao.edu" }]
+description = "Implementation of the GRIDflag algorithm for flagging RFI in radio interferometric data"
+dependencies = [
+    'astroviper',
+    'xradio',
+    'bokeh',
+    'click',
+    'matplotlib']
+license = {file="LICENSE"}
+requires-python = ">=3.8"
+classifiers = [
+            "Programming Language :: Python :: 3",
+            "License :: OSI Approved :: MIT License",
+            "Operating System :: OS Independent",
+            ]
+
+[project.scripts]
+gridflag = "gridflag.scripts.gridflag:main"
+
+[tool.setuptools]
+include-package-data = true
+
+[tool.setuptools.dynamic]
+readme = {file = ["README.md"]}
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.setuptools.package-data]
+"*" = ['*.txt']
