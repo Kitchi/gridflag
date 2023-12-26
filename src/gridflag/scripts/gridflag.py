@@ -17,6 +17,8 @@ from gridflag.histogram import *
 import dask
 dask.config.set(scheduler='synchronous')
 
+#viper_client = local_client(cores=8, memory_limit='4GB')
+
 # Add colours for warnings and errors
 logging.addLevelName(logging.WARNING, "\033[1;31m%s\033[1;0m" % logging.getLevelName(logging.WARNING))
 logging.addLevelName(logging.ERROR, "\033[1;41m%s\033[1;0m" % logging.getLevelName(logging.ERROR))
