@@ -1,5 +1,5 @@
 [build-system]
-requires = ["setuptools"]
+requires = ["setuptools>=61.0"]
 build-backend = "setuptools.build_meta"
 
 [project]
@@ -10,7 +10,7 @@ authors = [
          {name = "Srikrishna Sekhar", email = "ssekhar@nrao.edu" }]
 description = "Implementation of the GRIDflag algorithm for flagging RFI in radio interferometric data"
 dependencies = [
-    'astroviper',
+    'graphviper',
     'xradio',
     'bokeh',
     'click',
@@ -25,6 +25,7 @@ classifiers = [
 
 [project.scripts]
 gridflag = "gridflag.scripts.gridflag:main"
+plot_uvgrid = "gridflag.scripts.plot_uvgrid:main"
 
 [tool.setuptools]
 include-package-data = true

@@ -9,17 +9,16 @@ import numba as nb
 from xradio.vis.read_processing_set import read_processing_set
 from xradio.vis.load_processing_set import load_processing_set
 
-from astroviper._concurrency._graph_tools import _make_parallel_coord, _map
-from astroviper.client import local_client
+import xarray as xr
 
-from gridflag.histogram import *
+from gridflag.histogram import compute_uv_histogram, _merge_accum_hist
 
 import dask
+import dask.array as da
+from dask.distributed import Client, LocalCluster
 dask.config.set(scheduler='synchronous')
 
-#viper_client = local_client(cores=8, memory_limit='4GB')
-
-# Add colours for warnings and errors
+#Add colours for warnings and errors
 logging.addLevelName(logging.WARNING, "\033[1;31m%s\033[1;0m" % logging.getLevelName(logging.WARNING))
 logging.addLevelName(logging.ERROR, "\033[1;41m%s\033[1;0m" % logging.getLevelName(logging.ERROR))
 
@@ -33,6 +32,46 @@ logging.basicConfig(
 )
 
 logger = logging.getLogger()
+
+
+
+def create_chunks(baseline_id, frequencies, baseline_chunk_size, freq_chunk_size):
+    """
+    Given the input baseline_ids and frequencies, return a list of the start and end slices
+    to parallelize over.
+
+    Inputs:
+    baseline_id             : Baseline IDs, np.array
+    frequencies             : Frequencies, np.array
+    baseline_chunk_size     : Number of baseline IDs to process per chunk, int
+    freq_chunk_size         : Number of frequencies to process per chunk, int
+
+    Returns:
+    baseline_chunks         : List of start and end slices for baseline IDs
+    freq_chunks             : List of start and end slices for frequencies
+    """
+
+    baseline_chunks = []
+    freq_chunks = []
+
+    nbaseline = len(baseline_id)
+    nfreq = len(frequencies)
+
+    for bb in range(0, len(baseline_id), baseline_chunk_size):
+        if bb+baseline_chunk_size > nbaseline:
+            baseline_chunks.append(slice(baseline_id[bb], None))
+        else:
+            baseline_chunks.append(slice(baseline_id[bb],baseline_id[bb+baseline_chunk_size]))
+
+    for ff in range(0, len(frequencies), freq_chunk_size):
+        if ff+freq_chunk_size > nfreq:
+            freq_chunks.append(slice(frequencies[ff], None))
+        else:
+            freq_chunks.append(slice(frequencies[ff],frequencies[ff+freq_chunk_size]))
+
+    return baseline_chunks, freq_chunks
+
+
 
 ctx = dict(help_option_names=['-h', '--help'])
 
@@ -52,15 +91,14 @@ def main(zarr, uvrange, uvcell, nhistbin, nsigma):
     to auto-discover these parameters but it is currently not implemented.
     """
 
+    baseline_chunk_size = 128
+    freq_chunk_size = 16
+
+    #client = Client()
+    #client = Client(LocalCluster(n_workers=4, threads_per_worker=1))
+
     # Lazy load the processing set
     ps = read_processing_set(zarr)
-
-    parallel_coords = {}
-    n_chunks = 8
-    parallel_coords['baseline_id'] = _make_parallel_coord(coord=ps.get(0).baseline_id, n_chunks=n_chunks)
-
-    n_chunks = 6
-    parallel_coords['frequency'] = _make_parallel_coord(coord=ps.get(0).frequency, n_chunks=n_chunks)
 
     npixu = 2*uvrange[1]//uvcell
     npixv = uvrange[1]//uvcell
@@ -70,18 +108,58 @@ def main(zarr, uvrange, uvcell, nhistbin, nsigma):
     input_params['uvcell'] = uvcell
     input_params['nhistbin'] = nhistbin
     input_params['npixels'] = [npixu, npixv]
+    input_params['input_data'] = zarr
 
-    sel_params = {}
-    sel_params['fields'] = ['1453+330']
-    sel_params['intents'] = None
+    # TO DO : Investigate using sparse matrices to help memory usage here...
+    output = []
+    for idx in range(len(ps)):
+        # Chunk up each MSv4 in the processing set independently
+        ds = ps.get(idx)
+        baseline_id = ds.coords['baseline_id']
+        frequencies = ds.coords['frequency']
+
+        baseline_chunks, freq_chunks = create_chunks(baseline_id, frequencies, baseline_chunk_size, freq_chunk_size)
+
+        for bb in range(len(baseline_chunks)):
+            for ff in range(len(freq_chunks)):
+                print(bb, ff)
+                loc_dict = {'baseline_id':baseline_chunks[bb], 'frequency':freq_chunks[ff]}
+                this_ds = ds.loc[loc_dict]
+                print(this_ds)
+                input()
+
+                this_output = compute_uv_histogram(this_ds, input_params)
+                output.append(this_output)
+
+    result = dask.compute(output)
+
+    # Note :
+    # result is a list of lists, the inner "list" is itself a list of lists...
+    # This contains the histogram and bins for each baseline and frequency chunk above
+    # So len(result[0]) == number of baseline chunks * number of frequency chunks
+    # We now need to iterate through result[0] and sum the histograms and bins together
+
+    nchunk = len(output)
+    # Create a histogram per UV pixel - some might be entirely zeros, with no data.
+    accum_uv_hist = np.zeros((npixu, npixv, nhistbin), dtype=int)
+    # Store the histogram bin values for each pixel
+    accum_uv_hist_bins = np.zeros((npixu, npixv, nhistbin), dtype=float)
+
+    for nn in range(nchunk):
+        print('nonzero counts bins ', np.count_nonzero(result[0][nn][0]))
+        print('nonzero counts hist ', np.count_nonzero(result[0][nn][1]))
+        accum_uv_hist_bins, accum_uv_hist = _merge_accum_hist(result[0][nn][0], result[0][nn][1], accum_uv_hist_bins, accum_uv_hist, npixu, npixv, nhistbin)
+
+    print("nonzero counts ", np.count_nonzero(accum_uv_hist))
+
+    import uuid
+    tmpname = str(uuid.uuid4())
+    np.savez(tmpname, vis_hist_bins=accum_uv_hist_bins, vis_hist=accum_uv_hist)
+
+    print("FINISHED COMPUTE")
+    #client.close()
 
 
-    graph = _map(input_data_name = zarr,
-                 input_data_type='processing_set',
-                 parallel_coords = parallel_coords,
-                 input_parms = input_params,
-                 ps_sel_parms = sel_params,
-                 func_chunk = create_uv_histogram,
-                 client = local_client)
 
-    dask.compute(graph)
+if __name__ == '__main__':
+    main()
